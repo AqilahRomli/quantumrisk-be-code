@@ -1,0 +1,10 @@
+# Python cache and compiled files
+
+__pycache__/
+_.pyc
+_.pyo
+_.pyd
+_.py[cod]
+
+.git/
+.gitignore
