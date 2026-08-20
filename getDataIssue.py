@@ -84,7 +84,7 @@ def queryDBQuestion(host, user, password, database, port, query):
 # Function: search the related information in database from the question
 # ########################################################################
 async def query_issue_database(question):
-    db_read = SQLDatabase.from_uri(sql_uri_read, include_tables=['lesson_learn'], sample_rows_in_table_info=2, engine_args={'pool_pre_ping':True, 'pool_recycle':300})
+    db_read = SQLDatabase.from_uri(sql_uri_read, include_tables=['pm_issues'], sample_rows_in_table_info=2, engine_args={'pool_pre_ping':True, 'pool_recycle':300})
     
     try:
         # print("Process started ===================================== ")
