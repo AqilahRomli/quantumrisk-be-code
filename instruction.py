@@ -32,7 +32,7 @@ else:
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Define your LLM model
-llm = ChatOpenAI(temperature=0, openai_api_key=OPENAI_API_KEY, model='gpt-4o-mini', request_timeout=600)
+llm = ChatOpenAI(temperature=0, openai_api_key=OPENAI_API_KEY, model='gpt-4o-mini', request_timeout=120)
 
 # Precompile regex patterns
 PATTERNS = {

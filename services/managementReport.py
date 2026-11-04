@@ -16,50 +16,102 @@ from core.db import get_async_db
 from core.security import encrypt, decrypt
 
 
-#Number of user per department   
+#------------ Report groups ------------------
+# User counts and user lists include active users only (is_active); activity
+# reports keep the history of users who were deactivated later.
+# Which roles count under which department in the reports. This is the only
+# place the reports list role names: to move a role to another department, or
+# add a department, change it here (the dashboard shows whatever is listed).
+# Users with Developer access are never counted.
+REPORT_GROUPS = [
+    {"key": "PM", "label": "PM Users", "roles": ["PM-User", "PM-Admin"]},
+    {"key": "SC", "label": "SC Users", "roles": ["SC-User", "SC-Admin"]},
+    {"key": "RAC", "label": "RAC Users", "roles": ["RAC-User"]},
+]
+
+# Departments whose users run searches (the user activity reports)
+ACTIVITY_GROUPS = ["PM", "SC"]
+
+
+# Roles of the given groups
+def group_roles(*keys):
+    return [role for group in REPORT_GROUPS if group["key"] in keys for role in group["roles"]]
+
+
+# Every role that belongs to a group (anything else counts as "Other")
+def grouped_roles():
+    return group_roles(*[group["key"] for group in REPORT_GROUPS])
+
+
+# SQL condition for a report filter on a role column, starting at parameter $n.
+#   "all"      -> every role in `default_keys` groups (or every user if None)
+#   "other"    -> roles in no group
+#   group key  -> that group's roles ("PM", "SC", "RAC")
+#   role name  -> only that role
+# Returns (sql, params).
+def role_filter(value, column, n, default_keys=None):
+    if value == "all":
+        if default_keys is None:
+            return "TRUE", []
+        return f"{column} = ANY(${n}::text[])", [group_roles(*default_keys)]
+    if value == "other":
+        return f"({column} IS NULL OR NOT ({column} = ANY(${n}::text[])))", [grouped_roles()]
+    if any(group["key"] == value for group in REPORT_GROUPS):
+        return f"{column} = ANY(${n}::text[])", [group_roles(value)]
+    return f"{column} = ${n}", [value]
+
+
+#Number of user per department
 async def count_registered_user():
     try:
         async with get_async_db("r") as conn:
+            role_rows = await conn.fetch(
+                """
+                SELECT user_role, COUNT(DISTINCT username) AS users
+                FROM risk_user_table
+                WHERE access <> 'Developer'
+                AND is_active
+                GROUP BY user_role
+                """
+            )
             row = await conn.fetchrow(
                 """
                 SELECT
-                    COUNT(DISTINCT CASE 
-                        WHEN access = 'User' AND user_role = 'RAC-User' THEN username 
-                    END) AS rac_user_count,
-                    COUNT(DISTINCT CASE 
-                        WHEN access = 'User' AND user_role IN ('PM-Admin', 'PM-User') THEN username
-                    END) AS pm_user_count,
-                    COUNT(DISTINCT CASE 
-                        WHEN access = 'User' AND user_role IN ('SC-Admin', 'SC-User') THEN username 
-                    END) AS sc_user_count,
-                    COUNT(DISTINCT CASE 
-                        WHEN access = 'User' AND user_role = 'BTSM-User' THEN username 
-                    END) AS btsm_user_count,
-                    COUNT(DISTINCT CASE 
-                        WHEN access = 'User' THEN username 
-                    END) AS total_user_count,
-                    COUNT(DISTINCT CASE 
-                        WHEN access = 'Developer' THEN username 
-                    END) AS developer_count,
                     (
-                SELECT COUNT(DISTINCT ult.username)
-                FROM user_login_track ult
-                JOIN risk_user_table rut
-                    ON ult.username = rut.username
-                WHERE rut.access <> 'Developer'
-                ) AS user_login,
+                        SELECT COUNT(DISTINCT ult.username)
+                        FROM user_login_track ult
+                        JOIN risk_user_table rut
+                            ON ult.username = rut.username
+                        WHERE rut.access <> 'Developer'
+                        AND rut.is_active
+                    ) AS user_login,
                     (SELECT COUNT(DISTINCT name) FROM pm_members) AS pm_members_count,
                     (SELECT COUNT(DISTINCT name) FROM sc_members) AS sc_members_count
-                FROM risk_user_table;
-
                 """
             )
+
+            per_role = {r["user_role"]: r["users"] for r in role_rows}
+            groups = [
+                {
+                    "key": group["key"],
+                    "label": group["label"],
+                    "count": sum(per_role.get(role, 0) for role in group["roles"]),
+                }
+                for group in REPORT_GROUPS
+            ]
+            total = sum(per_role.values())
+            counts = {group["key"]: group["count"] for group in groups}
+
             return {
-                "total": row["total_user_count"],
-                "pm_user": row["pm_user_count"],
-                "sc_user": row["sc_user_count"],
-                "rac_user": row["rac_user_count"],
-                "btsm_user": row["btsm_user_count"],
+                "total": total,
+                # one entry per department, in REPORT_GROUPS order
+                "groups": groups,
+                # users whose role is in no department (e.g. Admin)
+                "other": total - sum(counts.values()),
+                # kept for the "registered vs not registered" chart
+                "pm_user": counts.get("PM", 0),
+                "sc_user": counts.get("SC", 0),
+                "rac_user": counts.get("RAC", 0),
                 "user_login": row["user_login"],
                 "pm_expected_user": row["pm_members_count"],
                 "sc_expected_user": row["sc_members_count"]
@@ -108,20 +160,18 @@ async def get_ytd_User_Activity():
             row = await conn.fetchrow(
                 """
                 SELECT
-                    COUNT(DISTINCT CASE 
-                        WHEN rut.user_role IN ('PM-User', 'PM-Admin') THEN hat.username
+                    COUNT(DISTINCT CASE
+                        WHEN rut.user_role = ANY($1::text[]) THEN hat.username
                     END) AS pm_question_id,
-                    COUNT(DISTINCT CASE 
-                        WHEN rut.user_role IN ('SC-User', 'SC-Admin') THEN hat.username 
+                    COUNT(DISTINCT CASE
+                        WHEN rut.user_role = ANY($2::text[]) THEN hat.username
                     END) AS sc_question_id
                 FROM history_addinfo_table hat
-                JOIN risk_user_table rut 
+                JOIN risk_user_table rut
                     ON hat.username = rut.username
-                WHERE rut.user_role <> 'Admin'
-                AND rut.user_role <> 'RAC-User'
-                AND rut.user_role <> 'BTSM-User'
-                AND rut.access <> 'Developer'
-                """
+                WHERE rut.access <> 'Developer'
+                """,
+                group_roles("PM"), group_roles("SC")
             )
             return {
                 "pm_activity": row["pm_question_id"],
@@ -139,20 +189,21 @@ async def get_User_Activity_monthly():
                 """
                 SELECT
                     DATE_TRUNC('month', hat.timestamp) AS month_value,
-                    COUNT(DISTINCT CASE 
-                        WHEN rut.user_role IN ('PM-User', 'PM-Admin') THEN hat.username  
+                    COUNT(DISTINCT CASE
+                        WHEN rut.user_role = ANY($1::text[]) THEN hat.username
                     END) AS pm_question_id,
-                    COUNT(DISTINCT CASE 
-                        WHEN rut.user_role IN ('SC-User', 'SC-Admin') THEN hat.username 
+                    COUNT(DISTINCT CASE
+                        WHEN rut.user_role = ANY($2::text[]) THEN hat.username
                     END) AS sc_question_id
                 FROM history_addinfo_table hat
-                JOIN risk_user_table rut 
+                JOIN risk_user_table rut
                     ON hat.username = rut.username
-                WHERE rut.user_role NOT IN ('Admin', 'RAC-User', 'BTSM-User')
+                WHERE rut.user_role = ANY($3::text[])
                 AND rut.access <> 'Developer'
                 GROUP BY month_value
                 ORDER BY month_value
-                """
+                """,
+                group_roles("PM"), group_roles("SC"), group_roles(*ACTIVITY_GROUPS)
             )
 
             result = []
@@ -240,45 +291,22 @@ async def get_top10_Keywords():
 
 
 #get User per department
+# user_role: "all" (every user, as counted on the dashboard), "other",
+# a group key from REPORT_GROUPS, or a role name
 async def get_user_per_department(user_role: str):
     try:
         async with get_async_db("r") as conn:
-            # Define role expansion mapping
-            role_mapping = {
-                "SC-User": ["SC-User", "SC-Admin"],
-                "PM-User": ["PM-User", "PM-Admin"],
-            }
-
-            if user_role == "all":
-                rows = await conn.fetch(
-                    """
-                    SELECT id, username, user_role, name, email, staff_id, division
-                    FROM risk_user_table
-                    WHERE user_role <> 'Admin'
-                    AND access <> 'Developer'
-                    """,
-                )
-            elif user_role in role_mapping:
-                roles = role_mapping[user_role]
-                rows = await conn.fetch(
-                    """
-                    SELECT id, username, user_role, name, email, staff_id, division
-                    FROM risk_user_table
-                    WHERE user_role = ANY($1::text[])
-                    AND access <> 'Developer'
-                    """,
-                    roles,
-                )
-            else:
-                rows = await conn.fetch(
-                    """
-                    SELECT id, username, user_role, name, email, staff_id, division
-                    FROM risk_user_table
-                    WHERE user_role = $1
-                    AND access <> 'Developer'
-                    """,
-                    user_role
-                )
+            condition, params = role_filter(user_role, "user_role", 1)
+            rows = await conn.fetch(
+                f"""
+                SELECT id, username, user_role, name, email, staff_id, division
+                FROM risk_user_table
+                WHERE {condition}
+                AND access <> 'Developer'
+                AND is_active
+                """,
+                *params
+            )
             result = []
 
             for row in rows:
@@ -300,18 +328,13 @@ async def get_user_per_department(user_role: str):
 
 
 #get activity per user per month
+# user_role: "all" (the ACTIVITY_GROUPS departments), a group key, or a role name
 async def get_activity_per_user(user_role: str):
     try:
         async with get_async_db("r") as conn:
-            # Define role expansion mapping
-            role_mapping = {
-                "SC-User": ["SC-User", "SC-Admin"],
-                "PM-User": ["PM-User", "PM-Admin"],
-            }
-
-            if (user_role == 'all'):
-                rows = await conn.fetch(
-                """
+            condition, params = role_filter(user_role, "rut.user_role", 1, ACTIVITY_GROUPS)
+            rows = await conn.fetch(
+                f"""
                 SELECT
                     rut.username,
                     rut.name,
@@ -321,7 +344,7 @@ async def get_activity_per_user(user_role: str):
                 FROM history_addinfo_table hat
                 JOIN risk_user_table rut
                     ON hat.username = rut.username
-                WHERE rut.user_role NOT IN ('Admin', 'RAC-User', 'BTSM-User')
+                WHERE {condition}
                 AND rut.access <> 'Developer'
                 GROUP BY
                     rut.username,
@@ -330,55 +353,8 @@ async def get_activity_per_user(user_role: str):
                     rut.user_role
                 ORDER BY activity_count DESC;
                 """,
+                *params
             )
-            elif user_role in role_mapping:
-                roles = role_mapping[user_role]
-                rows = await conn.fetch(
-                    """
-                    SELECT
-                        rut.username,
-                        rut.name,
-                        rut.email,
-                        rut.user_role,
-                        COUNT(DISTINCT hat.question_id) AS activity_count
-                    FROM history_addinfo_table hat
-                    JOIN risk_user_table rut
-                        ON hat.username = rut.username
-                    WHERE rut.user_role = ANY($1::text[])
-                    AND rut.access <> 'Developer'
-                    GROUP BY
-                        rut.username,
-                        rut.name,
-                        rut.email,
-                        rut.user_role
-                    ORDER BY activity_count DESC;
-                    """,
-                    roles
-                )
-
-            else:
-                rows = await conn.fetch(
-                    """
-                    SELECT
-                        rut.username,
-                        rut.name,
-                        rut.email,
-                        rut.user_role,
-                        COUNT(DISTINCT hat.question_id) AS activity_count
-                    FROM history_addinfo_table hat
-                    JOIN risk_user_table rut
-                        ON hat.username = rut.username
-                    WHERE rut.user_role = $1
-                    AND rut.access <> 'Developer'
-                    GROUP BY
-                        rut.username,
-                        rut.name,
-                        rut.email,
-                        rut.user_role
-                    ORDER BY activity_count DESC;
-                    """,
-                    user_role
-                )
 
             result = []  # final list of dicts
 
@@ -412,13 +388,9 @@ async def get_activity_per_month_detail(
         end_date = start_date + relativedelta(months=1)
 
         async with get_async_db("r") as conn:
-            # Define role expansion mapping
-            role_mapping = {
-                "SC-User": ["SC-User", "SC-Admin"],
-                "PM-User": ["PM-User", "PM-Admin"],
-            }
+            condition, role_params = role_filter(user_role, "rut.user_role", 3, ACTIVITY_GROUPS)
 
-            base_query = """
+            base_query = f"""
                 SELECT
                     DATE_TRUNC('month', hat.timestamp) AS month_value,
                     rut.username,
@@ -430,21 +402,13 @@ async def get_activity_per_month_detail(
                 JOIN risk_user_table rut
                     ON hat.username = rut.username
                 WHERE
-                    rut.user_role NOT IN ('Admin', 'RAC-User', 'BTSM-User')
+                    {condition}
                     AND rut."access" <> 'Developer'
                     AND hat.timestamp >= $1
                     AND hat.timestamp < $2
             """
 
-            params = [start_date, end_date]
-
-            if user_role not in ("SC-User", "PM-User"):        # ✅ fix 1: && → 'not in'
-                base_query += " AND rut.user_role = $3"
-                params.append(user_role)
-            else:                                               # ✅ fix 2: missing colon
-                roles = role_mapping[user_role]
-                base_query += " AND rut.user_role = ANY($3::text[])"  # ✅ fix 3: $1 → $3
-                params.append(roles)
+            params = [start_date, end_date, *role_params]
 
             base_query += """
                 GROUP BY
@@ -758,11 +722,7 @@ async def get_registered_non_registered(department: str, type: str):
         async with get_async_db("r") as conn:
             # 1. Resolve table + role filter dynamically
             member_table = "pm_members" if department == "PM" else "sc_members"
-            role_filter = (
-                "user_role = 'PM-User'"
-                if department == "PM"
-                else "user_role IN ('SC-Admin', 'SC-User')"
-            )
+            department_roles = group_roles("PM" if department == "PM" else "SC")
             # 2. Get member list
             member_rows = await conn.fetch(
                 f"""
@@ -780,11 +740,12 @@ async def get_registered_non_registered(department: str, type: str):
             ]
             # 3. Get risk users
             risk_rows = await conn.fetch(
-                f"""
+                """
                 SELECT name
                 FROM risk_user_table
-                WHERE access = 'User' AND {role_filter};
-                """
+                WHERE access = 'User' AND is_active AND user_role = ANY($1::text[]);
+                """,
+                department_roles
             )
             # 4. Decrypt + normalize
             risk_name_set = set()

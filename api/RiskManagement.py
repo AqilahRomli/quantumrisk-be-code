@@ -9,7 +9,8 @@ from datetime import datetime
 # ==============================
 # Third-Party Libraries
 # ==============================
-from fastapi import APIRouter, HTTPException, Security
+from fastapi import APIRouter, HTTPException, Security, Depends
+from fastapi.concurrency import run_in_threadpool
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 # ==============================
@@ -23,11 +24,11 @@ from getDataLessonLearn import query_ll_database
 from services.getDataAdd import additional_Info
 from services.pushPreferredData import push_PM_preferred_risk, push_SC_preferred_risk
 from services.pushHistorySearching import push_history_data, push_history_addinfo_data, generate_question_id
+from services.managementReport import get_top10_Keywords
 from instruction import create_question_instruction
-from services.es_pmIssues import get_issues
 
-from helper.InstructionAI import get_issues_keywords, get_sc_keywords
 from helper.tokenManagement import decode_access_token
+from helper.permissions import require_permission
 
 # Bearer token authentication
 bearer = HTTPBearer()
@@ -36,9 +37,27 @@ router = APIRouter()
 
 
 #------------------ Risk Suggestion Query --------------------------------
+# Most searched keywords across the system, shown on the Ask Me page before a search.
+# Same query as the dashboard's /get-top-keywords/, but needs only query-page.
+@router.get("/getPopularKeywords/")
+async def popular_keywords(auth: HTTPAuthorizationCredentials = Security(bearer), access: dict = Depends(require_permission("query-page"))):
+    try:
+        result = await get_top10_Keywords()
+
+        # get_top10_Keywords returns {"success": False, ...} on a database error
+        if isinstance(result, dict) and not result.get("success", True):
+            raise HTTPException(status_code=500, detail=result.get("message", "Unknown error"))
+
+        return {"success": True, "message": "Generate response successfully", "status": 200, "data": result}
+
+    except HTTPException as e:
+        raise e  # Let FastAPI + global handler format it
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 #Generate question_id
 @router.post("/generateQuestionId/")
-async def query_item(item: Item, auth: HTTPAuthorizationCredentials = Security(bearer)):
+async def query_item(item: Item, auth: HTTPAuthorizationCredentials = Security(bearer), access: dict = Depends(require_permission("query-page"))):
     try:
         # Extract and verify the JWT token from the Authorization header
         token = auth.credentials
@@ -74,7 +93,7 @@ async def query_item(item: Item, auth: HTTPAuthorizationCredentials = Security(b
 
 # get PM data for query
 @router.post("/getPMData/")
-async def query_item(item: getDataItem, auth: HTTPAuthorizationCredentials = Security(bearer)):
+async def query_item(item: getDataItem, auth: HTTPAuthorizationCredentials = Security(bearer), access: dict = Depends(require_permission("query-page"))):
     try:
         # Extract and verify the JWT token from the Authorization header
         token = auth.credentials
@@ -129,7 +148,7 @@ async def query_item(item: getDataItem, auth: HTTPAuthorizationCredentials = Sec
 
 # get SC Data for query 
 @router.post("/getSCData/")
-async def query_item(item: getDataItem, auth: HTTPAuthorizationCredentials = Security(bearer)):
+async def query_item(item: getDataItem, auth: HTTPAuthorizationCredentials = Security(bearer), access: dict = Depends(require_permission("query-page"))):
     try:
         # Extract and verify the JWT token from the Authorization header
         token = auth.credentials
@@ -184,7 +203,7 @@ async def query_item(item: getDataItem, auth: HTTPAuthorizationCredentials = Sec
 
 # get LL Data for query 
 @router.post("/getLLData/")
-async def query_item(item: getDataItem, auth: HTTPAuthorizationCredentials = Security(bearer)):
+async def query_item(item: getDataItem, auth: HTTPAuthorizationCredentials = Security(bearer), access: dict = Depends(require_permission("query-page"))):
     try:
         # Extract and verify the JWT token from the Authorization header
         token = auth.credentials
@@ -238,7 +257,7 @@ async def query_item(item: getDataItem, auth: HTTPAuthorizationCredentials = Sec
 
 # get Issue Data for query 
 @router.post("/getIssueData/")
-async def query_item(item: getDataItem, auth: HTTPAuthorizationCredentials = Security(bearer)):
+async def query_item(item: getDataItem, auth: HTTPAuthorizationCredentials = Security(bearer), access: dict = Depends(require_permission("query-page"))):
     try:
         # Extract and verify the JWT token from the Authorization header
         token = auth.credentials
@@ -292,7 +311,7 @@ async def query_item(item: getDataItem, auth: HTTPAuthorizationCredentials = Sec
 
 # get Additional Data for query
 @router.post("/getAddData/")
-async def query_item(item: getDataItem, auth: HTTPAuthorizationCredentials = Security(bearer)):
+async def query_item(item: getDataItem, auth: HTTPAuthorizationCredentials = Security(bearer), access: dict = Depends(require_permission("query-page"))):
     try:
         # Extract and verify the JWT token from the Authorization header
         token = auth.credentials
@@ -353,7 +372,8 @@ async def query_item(item: getDataItem, auth: HTTPAuthorizationCredentials = Sec
 async def upload_risk_data(
     pm_risk_data: List[PMRiskData], 
     sc_risk_data: List[SCRiskData], 
-    auth: HTTPAuthorizationCredentials = Security(bearer)
+    auth: HTTPAuthorizationCredentials = Security(bearer),
+    access: dict = Depends(require_permission("query-page"))
 ):
     try:
         # Verify JWT token
@@ -388,7 +408,7 @@ async def upload_risk_data(
 #------------------ Risk Proposal Suggestion --------------------------------
 #Generate Question base proposal detail
 @router.post("/create-question/")
-async def create_question(details: Details, auth: HTTPAuthorizationCredentials = Security(bearer)):
+async def create_question(details: Details, auth: HTTPAuthorizationCredentials = Security(bearer), access: dict = Depends(require_permission("proposal-manage.add"))):
     try:
         # Extract and verify the JWT token from the Authorization header
         token = auth.credentials
@@ -404,7 +424,7 @@ async def create_question(details: Details, auth: HTTPAuthorizationCredentials =
             raise HTTPException(status_code=400, detail="Input value cannot be empty") 
         
         # Generate Question
-        question = create_question_instruction(details.projectName, details.vertical, details.projectDesc, details.product)
+        question = await run_in_threadpool(create_question_instruction, details.projectName, details.vertical, details.projectDesc, details.product)
 
         # Generate unique question_id
         question_id = await generate_question_id()  
@@ -429,7 +449,7 @@ async def create_question(details: Details, auth: HTTPAuthorizationCredentials =
 
 # get suggestion when register risk   
 @router.post("/getSuggestion/")
-async def suggest_query(details: Details, auth: HTTPAuthorizationCredentials = Security(bearer)):
+async def suggest_query(details: Details, auth: HTTPAuthorizationCredentials = Security(bearer), access: dict = Depends(require_permission("proposal-manage.add"))):
     try:
         # Extract and verify the JWT token from the Authorization header
         token = auth.credentials
@@ -446,7 +466,7 @@ async def suggest_query(details: Details, auth: HTTPAuthorizationCredentials = S
             raise HTTPException(status_code=400, detail="Input value cannot be empty") 
         
         # Generate Question
-        question = create_question_instruction(details.projectName, details.vertical, details.projectDesc, details.product)
+        question = await run_in_threadpool(create_question_instruction, details.projectName, details.vertical, details.projectDesc, details.product)
         # print(question)
 
         pm_task = asyncio.create_task(query_pm_database(question))
@@ -463,7 +483,6 @@ async def suggest_query(details: Details, auth: HTTPAuthorizationCredentials = S
 
         # Generate unique question_id
         question_id = await generate_question_id()  
-
 
         # Log history for each pm_result entry
         for pm in pm_json.get("data", []):
@@ -527,33 +546,3 @@ async def suggest_query(details: Details, auth: HTTPAuthorizationCredentials = S
         raise e  # Let FastAPI + global handler format it
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-# get Additional Data for query
-@router.post("/TestingES/")
-async def test_es(item: Item, auth: HTTPAuthorizationCredentials = Security(bearer)):
-    try:
-        # Extract and verify the JWT token from the Authorization header
-        token = auth.credentials
-        decoded_data = decode_access_token(token)
-
-        # Now you have access to the decoded user data, like their username
-        username = decoded_data["sub"]
-        
-        # return 404 when question null
-        if item.question=="":
-            raise HTTPException(status_code=400, detail="Input value cannot be empty") 
-
-        result = get_sc_keywords(item.question)
-
-        # return response
-        if result:
-            return {"success": True, "message": "Generate response successfully", "status":200, "data": result}
-        return {"success": False, "message": "Fail to get response", "status":404, "data": {}}
-    
-    except HTTPException as e:
-        raise e  # Let FastAPI + global handler format it
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    
-

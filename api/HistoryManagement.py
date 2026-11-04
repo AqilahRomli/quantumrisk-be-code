@@ -1,16 +1,18 @@
 # ==============================
 # Third-Party Libraries
 # ==============================
-from fastapi import APIRouter, HTTPException, Security
+from fastapi import APIRouter, HTTPException, Security, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 # ==============================
 # Internal Modules
 # ==============================
 from services.Historypage import get_grouped_history, individual_delete_history, bulk_delete_history, get_history_data
+from services.Historypage import save_download_history, get_grouped_download_history, get_download_history_data, delete_download_history
 
-from helper.models import BulkDeleteRequest
+from helper.models import BulkDeleteRequest, DownloadRecord, BulkDeleteDownloadRequest
 from helper.tokenManagement import decode_access_token
+from helper.permissions import require_permission, require_login
 
 
 # Bearer token authentication
@@ -20,7 +22,7 @@ router = APIRouter()
 
 # get history
 @router.get("/getHistory/")
-async def historydata(auth: HTTPAuthorizationCredentials = Security(bearer)):
+async def historydata(auth: HTTPAuthorizationCredentials = Security(bearer), access: dict = Depends(require_permission("history-page"))):
     try:
         # Extract and verify the JWT token from the Authorization header
         token = auth.credentials
@@ -29,8 +31,7 @@ async def historydata(auth: HTTPAuthorizationCredentials = Security(bearer)):
         # Now you have access to the decoded user data, like their username
         username = decoded_data["sub"]
         # print(username)
-        
-        
+
         res = get_grouped_history(username)
 
         if any(res.values()):  # At least one category has data
@@ -60,7 +61,7 @@ async def historydata(auth: HTTPAuthorizationCredentials = Security(bearer)):
     
 # delete history individual
 @router.delete("/deleteHistoryIndividual/")
-async def DeleteHistoryIndividual(question_id: str, auth: HTTPAuthorizationCredentials = Security(bearer)):
+async def DeleteHistoryIndividual(question_id: str, auth: HTTPAuthorizationCredentials = Security(bearer), access: dict = Depends(require_permission("history-page"))):
     try:
         # Extract and verify the JWT token from the Authorization header
         token = auth.credentials
@@ -87,7 +88,8 @@ async def DeleteHistoryIndividual(question_id: str, auth: HTTPAuthorizationCrede
 @router.post("/deleteHistoryBulk/")
 async def delete_history_bulk(
     request: BulkDeleteRequest,
-    auth: HTTPAuthorizationCredentials = Security(bearer)
+    auth: HTTPAuthorizationCredentials = Security(bearer),
+    access: dict = Depends(require_permission("history-page"))
 ):
     try:
         token = auth.credentials
@@ -108,7 +110,7 @@ async def delete_history_bulk(
 
 # get history detail
 @router.get("/getHistoryDetails/")
-async def Get_History_Detail(question_id: str, auth: HTTPAuthorizationCredentials = Security(bearer)):
+async def Get_History_Detail(question_id: str, auth: HTTPAuthorizationCredentials = Security(bearer), access: dict = Depends(require_permission("history-page"))):
     try:
         # Extract and verify the JWT token from the Authorization header
         token = auth.credentials
@@ -133,6 +135,104 @@ async def Get_History_Detail(question_id: str, auth: HTTPAuthorizationCredential
                 status_code=404,
                 detail="No history data found for the given question ID and user."
             )
+
+    except HTTPException as e:
+        raise e  # Let FastAPI + global handler format it
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==============================
+# Download history (Downloaded page)
+# ==============================
+
+# record a file downloaded from the Ask Me page (own action, so only a login is needed)
+@router.post("/saveDownloadHistory/")
+async def SaveDownloadHistory(request: DownloadRecord, auth: HTTPAuthorizationCredentials = Security(bearer), access: dict = Depends(require_login())):
+    try:
+        username = decode_access_token(auth.credentials)["sub"]
+
+        risk_data = request.model_dump(include={"pm_data", "sc_data", "ll_data", "issue_data", "add_info"})
+        download_id = save_download_history(username, request.file_name.strip(), request.file_type, risk_data)
+
+        return {
+            "success": True,
+            "message": "Download recorded",
+            "status": 200,
+            "data": {"download_id": download_id}
+        }
+
+    except HTTPException as e:
+        raise e  # Let FastAPI + global handler format it
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# get download history list
+@router.get("/getDownloadHistory/")
+async def GetDownloadHistory(auth: HTTPAuthorizationCredentials = Security(bearer), access: dict = Depends(require_permission("download-tracker-page"))):
+    try:
+        username = decode_access_token(auth.credentials)["sub"]
+
+        res = get_grouped_download_history(username)
+
+        return {
+            "success": True,
+            "message": "Generate response successfully" if any(res.values()) else "No download was recorded",
+            "status": 200,
+            "data": res
+        }
+
+    except HTTPException as e:
+        raise e  # Let FastAPI + global handler format it
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# get the risks saved with one download
+@router.get("/getDownloadHistoryDetails/")
+async def GetDownloadHistoryDetails(download_id: str, auth: HTTPAuthorizationCredentials = Security(bearer), access: dict = Depends(require_permission("download-tracker-page"))):
+    try:
+        username = decode_access_token(auth.credentials)["sub"]
+
+        result = get_download_history_data(download_id, username)
+
+        if not result:
+            raise HTTPException(
+                status_code=404,
+                detail="Download record not found or does not belong to user"
+            )
+
+        return {
+            "success": True,
+            "message": "Generate response successfully",
+            "status": 200,
+            "data": result
+        }
+
+    except HTTPException as e:
+        raise e  # Let FastAPI + global handler format it
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# delete download history (one or many)
+@router.post("/deleteDownloadHistory/")
+async def DeleteDownloadHistory(request: BulkDeleteDownloadRequest, auth: HTTPAuthorizationCredentials = Security(bearer), access: dict = Depends(require_permission("download-tracker-page"))):
+    try:
+        username = decode_access_token(auth.credentials)["sub"]
+
+        deleted_count = delete_download_history(request.download_ids, username)
+
+        if deleted_count == 0:
+            raise HTTPException(
+                status_code=404,
+                detail="Download record not found or does not belong to user"
+            )
+
+        return {
+            "success": True,
+            "message": f"Deleted {deleted_count} entries.",
+            "status": 200,
+            "data": {"deleted": deleted_count}
+        }
 
     except HTTPException as e:
         raise e  # Let FastAPI + global handler format it

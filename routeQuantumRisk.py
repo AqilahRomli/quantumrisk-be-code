@@ -10,17 +10,9 @@ from fastapi.responses import JSONResponse
 # Internal Modules
 # ==============================
 from core.db import init_async_db
-from core.es_init import create_indexes
+from helper.permissions import warn_roles_without_permissions
 
-# Import API routers - each module has its own endpoints
-from api import (
-    UserAuth,
-    RiskManagement,
-    ProposalDash,       # proposal-count NEP 
-    ReportingDash,
-    HistoryManagement,
-    SSOAuthentication   # OV-QR token authentication
-)
+from api import UserAuth, RiskManagement, ProposalDash, ReportingDash, HistoryManagement, Health, SSOAuthentication
 
 # Bearer token authentication
 bearer = HTTPBearer()
@@ -45,10 +37,8 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup():
     await init_async_db()
+    await warn_roles_without_permissions()
 
-# @app.on_event("startup")
-# def startup_event():
-#     create_indexes()
 
 # Error Handler
 @app.exception_handler(HTTPException)
@@ -58,7 +48,9 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         content={
             "success": False,
             "status": exc.status_code,
-            "detail": exc.detail
+            "detail": exc.detail,
+            # e.g. "PERMISSION_DENIED" (helper/permissions.py), so the frontend can tell it apart
+            **({"code": exc.code} if getattr(exc, "code", None) else {})
         }
     )
 
@@ -74,3 +66,4 @@ app.include_router(
     SSOAuthentication.router,
     prefix="/auth"
 )
+app.include_router(Health.router)
