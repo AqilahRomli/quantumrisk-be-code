@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, Field
+from typing import List, Literal, Optional
 from datetime import datetime
 
 
@@ -25,7 +25,7 @@ class User(BaseModel):
     password: str
 
 class RegisterUser(BaseModel):
-    username_requestor: str
+    username_requestor: Optional[str] = None  # ignored, requestor is taken from the token
     fullname: str
     username: str
     email: str
@@ -34,19 +34,47 @@ class RegisterUser(BaseModel):
     user_role: str
     user_access: str
 
-class UserPassword(BaseModel):
-    user_id: str
-    password: str
-    newpassword: str
+# Register one or more users (individual form = a list of one, bulk = the uploaded rows).
+# The frontend has the same limit (helpers/new-user.ts) and the template has 500 rows.
+MAX_USERS_PER_REGISTER = 500
+
+class RegisterUsers(BaseModel):
+    users: List[RegisterUser] = Field(..., min_length=1, max_length=MAX_USERS_PER_REGISTER)
 
 class UpdateRole(BaseModel):
     username_requestor: str
     username: str
     id: str
     role: str
-class DeleteUser(BaseModel):
-    username: str
-    id: str
+
+class UpdateRoleDetail(BaseModel):
+    role_id: int
+    role_name: str
+    permission_ids: List[int]
+
+class CreateRoleDetail(BaseModel):
+    role_name: str
+    permission_ids: List[int]
+
+class DeleteRoleDetail(BaseModel):
+    role_id: int
+
+class CreatePermission(BaseModel):
+    name: str
+    group: str
+    description: str
+
+class DeletePermission(BaseModel):
+    permission_id: int
+
+class UpdateUserAccess(BaseModel):
+    user_id: int
+    role_id: int
+    permission_ids: List[int]
+
+class UpdateUserStatus(BaseModel):
+    user_id: int
+    is_active: bool
 
 class AdminChangePassword(BaseModel):
     username: str
@@ -164,3 +192,17 @@ class SCRiskData(BaseModel):
     key_mitigation: str
     residual_risk_rating: str
     control_owner: str
+# Download history (Ask Me page -> Downloaded page)
+MAX_ROWS_PER_SOURCE = 500
+
+class DownloadRecord(BaseModel):
+    file_name: str = Field(..., min_length=1, max_length=255)
+    file_type: Literal["xlsx", "pptx"]
+    pm_data: List[dict] = Field(default_factory=list, max_length=MAX_ROWS_PER_SOURCE)
+    sc_data: List[dict] = Field(default_factory=list, max_length=MAX_ROWS_PER_SOURCE)
+    ll_data: List[dict] = Field(default_factory=list, max_length=MAX_ROWS_PER_SOURCE)
+    issue_data: List[dict] = Field(default_factory=list, max_length=MAX_ROWS_PER_SOURCE)
+    add_info: List[dict] = Field(default_factory=list, max_length=MAX_ROWS_PER_SOURCE)
+
+class BulkDeleteDownloadRequest(BaseModel):
+    download_ids: List[str] = Field(..., min_length=1)

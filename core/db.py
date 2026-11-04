@@ -36,11 +36,8 @@ def get_connection(mode="rw"):
         if is_connection_alive(conn):
             return conn
 
-        # ❌ kill bad connection
-        try:
-            conn.close()
-        except:
-            pass
+        # ❌ kill bad connection (discard through the pool so its slot is freed)
+        discard_connection(conn, mode)
 
     raise Exception("No valid DB connection available")
 
@@ -48,11 +45,25 @@ def release_connection(conn, mode: str = "rw"):
     selected_pool = r_pool if mode == "r" else rw_pool
 
     if conn.closed != 0:
-        # ❌ connection already closed → don't return to pool
+        # ❌ connection already closed → free its slot, don't reuse it
+        discard_connection(conn, mode)
         return
 
     try:
         selected_pool.putconn(conn)
+    except:
+        try:
+            conn.close()
+        except:
+            pass
+
+def discard_connection(conn, mode: str = "rw"):
+    # Close the connection AND free its slot in the pool.
+    # Closing it directly would leave the slot marked as used forever.
+    selected_pool = r_pool if mode == "r" else rw_pool
+
+    try:
+        selected_pool.putconn(conn, close=True)
     except:
         try:
             conn.close()
@@ -78,11 +89,15 @@ def get_db(mode="rw"):
     try:
         yield conn
     except Exception:
-        # ❌ connection is unsafe → destroy it
+        # Errors raised by our own code (wrong password, not found, ...) do not
+        # break the connection: undo unfinished work and give it back to the pool.
         try:
-            conn.close()
+            conn.rollback()
         except:
-            pass
+            # ❌ rollback failed → connection is unsafe, destroy it
+            discard_connection(conn, mode)
+        else:
+            release_connection(conn, mode)
         raise
     else:
         # ✅ only return healthy connection

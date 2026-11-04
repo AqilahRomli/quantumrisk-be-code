@@ -10,6 +10,7 @@ from typing import List
 # Third-Party Libraries
 # ==============================
 from cryptography.fernet import InvalidToken
+from fastapi import HTTPException
 
 # ==============================
 # Internal Modules
@@ -51,6 +52,25 @@ async def generate_proposal_id(conn):
         unique_ids = candidate_ids - existing_ids
         if unique_ids:
             return unique_ids.pop()  # Return the first available unique ID
+
+
+# A proposal can only be changed (update, submit, delete) by its owner,
+# and only while it is still a draft. Must be called inside a transaction:
+# the row is locked so two requests cannot change the same proposal at once.
+async def check_proposal_can_change(conn, proposalId: str, username: str):
+    proposal = await conn.fetchrow(
+        "SELECT created_by, status FROM sc_proposal_table WHERE proposal_id = $1 FOR UPDATE",
+        proposalId
+    )
+
+    if not proposal:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+
+    if proposal["created_by"] != username:
+        raise HTTPException(status_code=403, detail="Access denied. Only the owner can change this proposal.")
+
+    if (proposal["status"] or "").lower() == "complete":
+        raise HTTPException(status_code=409, detail="A completed proposal cannot be changed or deleted.")
 
 
 # Function to upload risk data
@@ -374,9 +394,19 @@ async def pending_proposal(username: str):
         return {"success": False, "message": str(e)}
 
 
-async def proposal_details(proposalId: str):
+async def proposal_details(proposalId: str, username: str, can_view_all: bool):
     try:
         async with get_async_db("r") as conn:
+            # Only the owner can view a proposal, unless the role can view all proposals
+            owner = await conn.fetchrow(
+                "SELECT created_by FROM sc_proposal_table WHERE proposal_id = $1",
+                proposalId
+            )
+            if not owner:
+                raise HTTPException(status_code=404, detail="Proposal not found")
+            if not can_view_all and owner["created_by"] != username:
+                raise HTTPException(status_code=403, detail="Access denied. You can only view your own proposal.")
+
             # Query proposal information (assuming only one row per proposal_id)
             proposal_row = await conn.fetchrow(
                 """
@@ -403,8 +433,8 @@ async def proposal_details(proposalId: str):
             )
 
             if not proposal_row:
-                return {"success": False, "message": "Proposal not found"}
-            
+                raise HTTPException(status_code=404, detail="Proposal not found")
+
             created_by = await conn.fetchrow(
                 """
                 SELECT 
@@ -462,7 +492,9 @@ async def proposal_details(proposalId: str):
                 "proposal": proposal_data,
                 "risks": risks
             }
-        
+
+    except HTTPException:
+        raise  # 403 / 404 from the checks above
     except Exception as e:
         return {"success": False, "message": str(e)}
 
@@ -473,13 +505,8 @@ async def update_proposal(proposalId: str, customer: str, projectName: str, risk
             risk_ids = []
 
             async with conn.transaction():
-                # 1. Check if proposal exists
-                existing = await conn.fetchrow(
-                    "SELECT 1 FROM sc_proposal_table WHERE proposal_id = $1",
-                    proposalId
-                )
-                if not existing:
-                    return {"success": False, "message": f"Proposal ID '{proposalId}' does not exist"}
+                # 1. Check proposal exists, belongs to this user and is still a draft
+                await check_proposal_can_change(conn, proposalId, username)
 
                 # 2. Optional: Update proposal detail
                 await conn.execute(
@@ -551,6 +578,8 @@ async def update_proposal(proposalId: str, customer: str, projectName: str, risk
 
             return {"success": True, "message": "Proposal and risks updated successfully"}
 
+    except HTTPException:
+        raise  # 403 / 404 / 409 from the checks above
     except Exception as e:
         return {"success": False, "message": str(e)}
 
@@ -558,16 +587,22 @@ async def update_proposal(proposalId: str, customer: str, projectName: str, risk
 async def delete_proposal(proposalId: str, username: str):
     try:
         async with get_async_db("rw") as conn:
-            await conn.execute(
-                """
-                DELETE FROM sc_proposal_table
-                WHERE proposal_id = $1 AND created_by = $2
-                """,
-                proposalId, username
-            )
+            async with conn.transaction():
+                # Check proposal exists, belongs to this user and is still a draft
+                await check_proposal_can_change(conn, proposalId, username)
+
+                await conn.execute(
+                    """
+                    DELETE FROM sc_proposal_table
+                    WHERE proposal_id = $1 AND created_by = $2
+                    """,
+                    proposalId, username
+                )
 
             return {"success": True, "message": "Proposal successfully deleted"}
 
+    except HTTPException:
+        raise  # 403 / 404 / 409 from the checks above
     except Exception as e:
         return {"success": False, "message": str(e)}
 
@@ -579,13 +614,8 @@ async def Post_submitRisk(proposalId, customer, projectName, risk_data: List[Ris
             risk_ids = []
 
             async with conn.transaction():
-                # 1. Check if proposal exists
-                existing = await conn.fetchrow(
-                    "SELECT 1 FROM sc_proposal_table WHERE proposal_id = $1",
-                    proposalId
-                )
-                if not existing:
-                    return {"success": False, "message": f"Proposal ID '{proposalId}' does not exist"}
+                # 1. Check proposal exists, belongs to this user and is still a draft
+                await check_proposal_can_change(conn, proposalId, username)
 
                 # 2. Optional: Update proposal detail
                 await conn.execute(
@@ -710,5 +740,7 @@ async def Post_submitRisk(proposalId, customer, projectName, risk_data: List[Ris
 
             return {"success": True, "message": "Proposal and risks updated successfully"}
 
+    except HTTPException:
+        raise  # 403 / 404 / 409 from the checks above
     except Exception as e:
         return {"success": False, "message": str(e)}

@@ -9,6 +9,7 @@ import json
 from langchain_openai import ChatOpenAI
 
 from fastapi import HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 # ==============================
@@ -25,7 +26,9 @@ from helper.InstructionAI import additional_instruction
 async def additional_Info(question):
     #print("Process started ===================================== ")
 
-    add_result = additional_instruction(question)
+    # The AI call is blocking, so it runs in a worker thread and the server
+    # stays free to answer other requests while this waits.
+    add_result = await run_in_threadpool(additional_instruction, question)
 
     if add_result:
         #print("get Additional Info")

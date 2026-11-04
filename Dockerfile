@@ -2,7 +2,7 @@
 FROM python:3.11-slim
 
 # Set environment variable
-ENV APP_ENV=staging
+ENV APP_ENV=prod
 
 # Set working directory
 WORKDIR /app

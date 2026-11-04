@@ -6,7 +6,7 @@ from typing import List, Optional
 # ==============================
 # Third-Party Libraries
 # ==============================
-from fastapi import APIRouter, HTTPException, Query, Security
+from fastapi import APIRouter, HTTPException, Query, Security, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 # ==============================
@@ -17,6 +17,7 @@ from services.getSCAdmindata import count_proposal, count_risk_project, count_pr
 
 from helper.models import RiskRegistrationRequest, RiskUpdateRequest
 from helper.tokenManagement import decode_access_token
+from helper.permissions import require_permission, has_permission
 
 # Bearer token authentication
 bearer = HTTPBearer()
@@ -28,12 +29,14 @@ router = APIRouter()
 @router.post("/risk-registration/") #CREATE NEW PROPOSAL
 async def risk_data_registration(
     register: RiskRegistrationRequest,
-    auth: HTTPAuthorizationCredentials = Security(bearer)
+    auth: HTTPAuthorizationCredentials = Security(bearer),
+    access: dict = Depends(require_permission("proposal-manage.add"))
 ):
     try:
         # Verify JWT token
         token = auth.credentials
         decoded_data = decode_access_token(token)
+
         username = decoded_data["sub"]  # Extract username from token
 
         # Call upload_data function from preferredData.py
@@ -53,16 +56,18 @@ async def risk_data_registration(
 @router.get("/proposal-details/")
 async def get_proposal_details( 
     proposalId: str,
-    auth: HTTPAuthorizationCredentials = Security(bearer)
+    auth: HTTPAuthorizationCredentials = Security(bearer),
+    access: dict = Depends(require_permission("proposal-manage.add", "proposal-list.view-all"))
 ):
     try:
         # Verify JWT token
         token = auth.credentials
         decoded_data = decode_access_token(token)
+
         username = decoded_data["sub"]  # Extract username from token
 
         # Call upload_data function from preferredData.py
-        result = await proposal_details(proposalId)
+        result = await proposal_details(proposalId, username, has_permission(access, "proposal-list.view-all"))
 
         if result:
             return result
@@ -78,12 +83,14 @@ async def get_proposal_details(
 @router.post("/update-proposal/")
 async def update_proposal_details(
     updateproposal: RiskUpdateRequest,
-    auth: HTTPAuthorizationCredentials = Security(bearer)
+    auth: HTTPAuthorizationCredentials = Security(bearer),
+    access: dict = Depends(require_permission("proposal-manage.add"))
 ):
     try:
         # Verify JWT token
         token = auth.credentials
         decoded_data = decode_access_token(token)
+
         username = decoded_data["sub"]  # Extract username from token
 
         # Call upload_data function from preferredData.py
@@ -101,7 +108,7 @@ async def update_proposal_details(
 
 #Delete Draft Proposal
 @router.delete("/deleteproposal/")
-async def DeleteProposal(proposalId: str, auth: HTTPAuthorizationCredentials = Security(bearer)):
+async def DeleteProposal(proposalId: str, auth: HTTPAuthorizationCredentials = Security(bearer), access: dict = Depends(require_permission("proposal-manage.add"))):
     try:
         # Extract and verify the JWT token from the Authorization header
         token = auth.credentials
@@ -130,12 +137,14 @@ async def DeleteProposal(proposalId: str, auth: HTTPAuthorizationCredentials = S
 @router.post("/Submit-Risk/") #SUBMIT PROPOSAL
 async def submit_Risk(
     updateproposal: RiskUpdateRequest,
-    auth: HTTPAuthorizationCredentials = Security(bearer)
+    auth: HTTPAuthorizationCredentials = Security(bearer),
+    access: dict = Depends(require_permission("proposal-manage.add"))
 ):
     try:
         # Verify JWT token
         token = auth.credentials
         decoded_data = decode_access_token(token)
+
         username = decoded_data["sub"]  # Extract username from token
 
         # Call upload_data function from preferredData.py
@@ -156,11 +165,13 @@ async def submit_Risk(
 # Proposal List - [Non Admin]
 @router.get("/proposal-list/")
 async def get_proposal_list(
-    auth: HTTPAuthorizationCredentials = Security(bearer)
+    auth: HTTPAuthorizationCredentials = Security(bearer),
+    access: dict = Depends(require_permission("proposal-manage.add"))
 ):
     try:
         token = auth.credentials
         decoded_data = decode_access_token(token)
+
         username = decoded_data["sub"]
 
         result = await proposal_list(username)
@@ -183,11 +194,13 @@ async def get_proposal_list(
 async def get_proposal_list_Admin(
     auth: HTTPAuthorizationCredentials = Security(bearer),
     status: Optional[str] = Query(None, description="Filter by status (Draft or Complete)"),
-    created_by: Optional[List[str]] = Query(None, description="Filter by one or more creators")
+    created_by: Optional[List[str]] = Query(None, description="Filter by one or more creators"),
+    access: dict = Depends(require_permission("proposal-list.view-all"))
 ):
     try:
         token = auth.credentials
         decoded_data = decode_access_token(token)
+
         username = decoded_data["sub"]
 
         result = await proposal_list_Admin(status=status, created_by=created_by)
@@ -210,11 +223,13 @@ async def get_proposal_list_Admin(
 async def get_top_user_list_Admin(
     auth: HTTPAuthorizationCredentials = Security(bearer),
     status: Optional[str] = Query(None, description="Filter by proposal status"),
-    created_by: Optional[List[str]] = Query(None, description="Filter by one or more creators")
+    created_by: Optional[List[str]] = Query(None, description="Filter by one or more creators"),
+    access: dict = Depends(require_permission("proposal-list.view-all"))
 ):
     try:
         token = auth.credentials
         decoded_data = decode_access_token(token)
+
         username = decoded_data["sub"]
 
         result = await proposal_summary_with_list(created_by=created_by, status=status)
@@ -233,9 +248,11 @@ async def get_top_user_list_Admin(
 
 
 # Get Number of Proposal Pending
+# No role check: the side menu calls this for every role and it only returns the caller's own count
 @router.get("/proposal-pending-count/")
 async def get_number_proposal_pending( 
-    auth: HTTPAuthorizationCredentials = Security(bearer)
+    auth: HTTPAuthorizationCredentials = Security(bearer),
+    access: dict = Depends(require_permission("proposal-manage.add"))
 ):
     try:
         token = auth.credentials
@@ -260,11 +277,13 @@ async def get_number_proposal_pending(
 # Get Number of Proposal
 @router.get("/proposal-count/")
 async def get_number_proposal( 
-    auth: HTTPAuthorizationCredentials = Security(bearer)
+    auth: HTTPAuthorizationCredentials = Security(bearer),
+    access: dict = Depends(require_permission("proposal-list.view-all", "proposal-reporting.view"))
 ):
     try:
         token = auth.credentials
         decoded_data = decode_access_token(token)
+
         username = decoded_data["sub"]
 
         result = await count_proposal()
@@ -285,11 +304,13 @@ async def get_number_proposal(
 # Get Number of Risk and Project
 @router.get("/project-risk-count/")
 async def get_number_risk_project( 
-    auth: HTTPAuthorizationCredentials = Security(bearer)
+    auth: HTTPAuthorizationCredentials = Security(bearer),
+    access: dict = Depends(require_permission("proposal-list.view-all"))
 ):
     try:
         token = auth.credentials
         decoded_data = decode_access_token(token)
+
         username = decoded_data["sub"]
 
         result = await count_risk_project()
@@ -310,7 +331,8 @@ async def get_number_risk_project(
 # Get Number of Proposal
 @router.get("/list-sc_risk/")
 async def get_sc_risk_list( 
-    auth: HTTPAuthorizationCredentials = Security(bearer)
+    auth: HTTPAuthorizationCredentials = Security(bearer),
+    access: dict = Depends(require_permission("proposal-list.view-all"))
 ):
     try:
         token = auth.credentials
@@ -334,11 +356,13 @@ async def get_sc_risk_list(
 # Get Number of Complete Proposal per User
 @router.get("/complete-proposal-perUser/")
 async def get_number_complete_proposal_perUser( 
-    auth: HTTPAuthorizationCredentials = Security(bearer)
+    auth: HTTPAuthorizationCredentials = Security(bearer),
+    access: dict = Depends(require_permission("proposal-list.view-all"))
 ):
     try:
         token = auth.credentials
         decoded_data = decode_access_token(token)
+
         username = decoded_data["sub"]
 
         result = await count_proposal_perUser()
@@ -359,11 +383,13 @@ async def get_number_complete_proposal_perUser(
 # Get TOP 10 SC user - for bar chart
 @router.get("/top-completed-proposal/")
 async def get_top_completed_proposal( 
-    auth: HTTPAuthorizationCredentials = Security(bearer)
+    auth: HTTPAuthorizationCredentials = Security(bearer),
+    access: dict = Depends(require_permission("proposal-list.view-all"))
 ):
     try:
         token = auth.credentials
         decoded_data = decode_access_token(token)
+
         username = decoded_data["sub"]
 
         result = await topten_sc_user()

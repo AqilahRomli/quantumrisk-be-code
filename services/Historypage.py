@@ -1,6 +1,7 @@
 # ==============================
 # Standard Library
 # ==============================
+import uuid
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import List
@@ -8,7 +9,7 @@ from typing import List
 # ==============================
 # Third-Party Libraries
 # ==============================
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import RealDictCursor, Json
 
 from fastapi import HTTPException
 
@@ -25,11 +26,6 @@ def get_grouped_history(username: str):
         with get_db("r") as conn:
             cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-            # Date boundaries
-            today = datetime.now().date()
-            yesterday = today - timedelta(days=1)
-            seven_days_ago = today - timedelta(days=7)
-
             query = """
             SELECT DISTINCT username, question_id, question, timestamp
             FROM history_addinfo_table
@@ -40,42 +36,52 @@ def get_grouped_history(username: str):
             cursor.execute(query, (username,))
             rows = cursor.fetchall()
 
-            # Initialize groups
-            grouped = {
-                "today": [],
-                "yesterday": [],
-                "last7Days": [],
-                "older": []
-            }
-
-            for row in rows:
-                # Convert and format timestamp
-                original_ts = row["timestamp"]
-                if original_ts:
-                    local_ts = original_ts.astimezone(ZoneInfo("Asia/Kuala_Lumpur"))
-                    row["timestamp"] = local_ts.isoformat()  # or use .strftime('%Y-%m-%d %H:%M:%S')
-
-                    # Use the date part for grouping
-                    record_date = local_ts.date()
-                else:
-                    record_date = None
-
-                # Group by date
-                if record_date == today:
-                    grouped["today"].append(row)
-                elif record_date == yesterday:
-                    grouped["yesterday"].append(row)
-                elif seven_days_ago < record_date < yesterday:
-                    grouped["last7Days"].append(row)
-                else:
-                    grouped["older"].append(row)
-
             cursor.close()
 
-            return grouped
+            return group_rows_by_day(rows)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch history: {str(e)}")
+
+
+def group_rows_by_day(rows):
+    """Split rows (newest first) into today / yesterday / last7Days / older by their "timestamp"."""
+    # Date boundaries
+    today = datetime.now().date()
+    yesterday = today - timedelta(days=1)
+    seven_days_ago = today - timedelta(days=7)
+
+    # Initialize groups
+    grouped = {
+        "today": [],
+        "yesterday": [],
+        "last7Days": [],
+        "older": []
+    }
+
+    for row in rows:
+        # Convert and format timestamp
+        original_ts = row["timestamp"]
+        if original_ts:
+            local_ts = original_ts.astimezone(ZoneInfo("Asia/Kuala_Lumpur"))
+            row["timestamp"] = local_ts.isoformat()  # or use .strftime('%Y-%m-%d %H:%M:%S')
+
+            # Use the date part for grouping
+            record_date = local_ts.date()
+        else:
+            record_date = None
+
+        # Group by date
+        if record_date == today:
+            grouped["today"].append(row)
+        elif record_date == yesterday:
+            grouped["yesterday"].append(row)
+        elif record_date and seven_days_ago < record_date < yesterday:
+            grouped["last7Days"].append(row)
+        else:
+            grouped["older"].append(row)
+
+    return grouped
 
 
 def individual_delete_history(question_id:str, username: str):
@@ -236,6 +242,97 @@ def get_history_data(question_id:str, username: str):
 
     except Exception as e:
         raise Exception(f"Database error during delete: {str(e)}")
+
+
+# ==============================
+# Download history (Downloaded page)
+# ==============================
+DOWNLOAD_SOURCES = ("pm_data", "sc_data", "ll_data", "issue_data", "add_info")
+
+
+def save_download_history(username: str, file_name: str, file_type: str, risk_data: dict) -> str:
+    try:
+        download_id = str(uuid.uuid4())
+        risk_count = sum(len(risk_data.get(key) or []) for key in DOWNLOAD_SOURCES)
+
+        with get_db("rw") as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO download_history_table
+                    (download_id, username, file_name, file_type, risk_count, risk_data)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (download_id, username, file_name, file_type, risk_count, Json(risk_data)))
+            conn.commit()
+            cursor.close()
+
+        return download_id
+
+    except Exception as e:
+        raise Exception(f"Database error during save download history: {str(e)}")
+
+
+def get_grouped_download_history(username: str):
+    try:
+        with get_db("r") as conn:
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("""
+                SELECT download_id, file_name, file_type, risk_count, timestamp
+                FROM download_history_table
+                WHERE username = %s
+                ORDER BY timestamp DESC;
+            """, (username,))
+            rows = cursor.fetchall()
+            cursor.close()
+
+            return group_rows_by_day(rows)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch download history: {str(e)}")
+
+
+def get_download_history_data(download_id: str, username: str):
+    try:
+        with get_db("r") as conn:
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("""
+                SELECT download_id, file_name, file_type, risk_count, timestamp, risk_data
+                FROM download_history_table
+                WHERE download_id = %s AND username = %s
+            """, (download_id, username))
+            row = cursor.fetchone()
+            cursor.close()
+
+        if not row:
+            return None
+
+        risk_data = row.pop("risk_data") or {}
+        for key in DOWNLOAD_SOURCES:
+            row[key] = risk_data.get(key) or []
+        if row["timestamp"]:
+            row["timestamp"] = row["timestamp"].astimezone(ZoneInfo("Asia/Kuala_Lumpur")).isoformat()
+
+        return row
+
+    except Exception as e:
+        raise Exception(f"Database error during get download history: {str(e)}")
+
+
+def delete_download_history(download_ids: List[str], username: str) -> int:
+    try:
+        with get_db("rw") as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM download_history_table
+                WHERE download_id IN %s AND username = %s
+            """, (tuple(download_ids), username))
+            deleted = cursor.rowcount
+            conn.commit()
+            cursor.close()
+
+            return deleted
+
+    except Exception as e:
+        raise Exception(f"Database error during delete download history: {str(e)}")
 
 
 #Test for decrypt sensitive data
