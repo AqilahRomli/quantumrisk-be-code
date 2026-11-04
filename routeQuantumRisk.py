@@ -12,7 +12,15 @@ from fastapi.responses import JSONResponse
 from core.db import init_async_db
 from core.es_init import create_indexes
 
-from api import UserAuth, RiskManagement, ProposalDash, ReportingDash, HistoryManagement
+# Import API routers - each module has its own endpoints
+from api import (
+    UserAuth,
+    RiskManagement,
+    ProposalDash,       # proposal-count NEP 
+    ReportingDash,
+    HistoryManagement,
+    SSOAuthentication   # OV-QR token authentication
+)
 
 # Bearer token authentication
 bearer = HTTPBearer()
@@ -27,6 +35,7 @@ app.add_middleware(
     "http://localhost",
     "http://localhost:8080", 
     "http://localhost:4200",
+    "http://localhost:4300",
 ],
     allow_credentials=True,
     allow_methods=["*"],  # You can restrict HTTP methods as needed (e.g., ["GET", "POST"])
@@ -59,3 +68,9 @@ app.include_router(RiskManagement.router)
 app.include_router(ProposalDash.router)
 app.include_router(ReportingDash.router)
 app.include_router(HistoryManagement.router)
+
+# OV to QR SSO Authentication API
+app.include_router(
+    SSOAuthentication.router,
+    prefix="/auth"
+)

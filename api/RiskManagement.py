@@ -469,12 +469,13 @@ async def suggest_query(details: Details, auth: HTTPAuthorizationCredentials = S
         for pm in pm_json.get("data", []):
             await push_history_data([
                 HistoryData(
-                    username=details.username,
+                    username=username,
                     ques_id= question_id,
                     question=question,
                     risk_id=pm.get("risk_id"),
                     stakeholder=pm.get("stakeholder"),
-                    timestamp= start_time
+                    timestamp= start_time,
+                    keyword=", ".join(pm_json.get("keywords", []))
                 )
             ])
 
@@ -482,12 +483,13 @@ async def suggest_query(details: Details, auth: HTTPAuthorizationCredentials = S
         for sc in sc_json.get("data", []):
             await push_history_data([
                 HistoryData(
-                    username=details.username,
+                    username=username,
                     ques_id= question_id,
                     question=question,
                     risk_id=sc.get("risk_id"),
                     stakeholder=sc.get("stakeholder"),
-                    timestamp= start_time
+                    timestamp= start_time,
+                    keyword=", ".join(sc_json.get("keywords", []))
                 )
             ])
         
@@ -495,7 +497,7 @@ async def suggest_query(details: Details, auth: HTTPAuthorizationCredentials = S
         for addInfo in add_info_json.get("data", []):
             await push_history_addinfo_data([
                 HistoryAddInfoData(
-                    username=details.username,
+                    username=username,
                     ques_id= question_id,
                     question=question,
                     risk_title=addInfo.get("Risk_Title"),
@@ -504,7 +506,8 @@ async def suggest_query(details: Details, auth: HTTPAuthorizationCredentials = S
                     risk_root_cause=addInfo.get("Risk_Root_Cause"),
                     risk_impact=addInfo.get("Risk_Impact"),
                     risk_mitigation=addInfo.get("Risk_Mitigation"),
-                    timestamp= start_time
+                    timestamp= start_time,
+                    keyword=", ".join(add_info_json.get("keywords", []))
                 )
             ])
 
